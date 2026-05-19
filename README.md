@@ -1,3 +1,9 @@
+Bibliotecas necessárias:
+pip instal flet gmqtt
+
+link wokwi: https://wokwi.com/projects/464402418849161217
+
+
 # Iot app
 
 ## Run the app
