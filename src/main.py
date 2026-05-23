@@ -15,18 +15,29 @@ class IndustryDashboard:
         self.client = None
         
         # Elementos de Interface (Labels de Monitoramento)
-        self.temp_text = ft.Text("--- °C", size=32, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE)
-        self.vib_text = ft.Text("--- g", size=32, weight=ft.FontWeight.BOLD, color=ft.Colors.PURPLE)
+        self.temp_text = ft.Text("--- °C", size=32, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE)
+        self.vib_text = ft.Text("--- g", size=32, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE)
+        
+        # Containers de Monitoramento (Guardados em variáveis para alterar o bgcolor depois)
+        self.temp_container = ft.Container(
+            content=ft.Column([ft.Text("Temperatura Atual"), self.temp_text], alignment=ft.MainAxisAlignment.CENTER),
+            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, padding=20, border_radius=10, expand=True
+        )
+        self.vib_container = ft.Container(
+            content=ft.Column([ft.Text("Vibração Atual"), self.vib_text], alignment=ft.MainAxisAlignment.CENTER),
+            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, padding=20, border_radius=10, expand=True
+        )
         
         # Inputs para os Limites
-        self.input_max_temp = ft.TextField(label="Temp Máxima (°C)", value="40.0", width=140)
-        self.input_min_temp = ft.TextField(label="Temp Mínima (°C)", value="20.0", width=140)
-        self.input_vib_limit = ft.TextField(label="Limite Vibração (g)", value="2.5", width=140)
+        self.input_max_temp = ft.TextField(label="Temp Máxima (°C)", value="40.0", width=140, keyboard_type=ft.KeyboardType.NUMBER)
+        self.input_min_temp = ft.TextField(label="Temp Mínima (°C)", value="20.0", width=140, keyboard_type=ft.KeyboardType.NUMBER)
+        self.input_vib_limit = ft.TextField(label="Limite Vibração (g)", value="2.5", width=140, keyboard_type=ft.KeyboardType.NUMBER)
         
         # Estado do Buzzer
         self.buzzer_state = False
         self.buzzer_btn = ft.Button(
-            "Ligar Buzzer", 
+            
+            "Operar Buzzer", 
             icon=ft.Icons.VOLUME_UP, 
             on_click=self.toggle_buzzer, 
             style=ft.ButtonStyle(bgcolor=ft.Colors.RED_400, color=ft.Colors.WHITE)
@@ -36,47 +47,61 @@ class IndustryDashboard:
         """Inicializa e conecta o cliente MQTT assíncrono."""
         client_id = f"FletClient-{uuid.uuid4().hex[:6]}"
         self.client = MQTTClient(client_id)
-        
-        # Configuração de credenciais e SSL (Porta 8883 exige SSL)
         self.client.set_auth_credentials(MQTT_USER, MQTT_PASS)
-        
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
         
         try:
-            # Conecta usando SSL/TLS nativo para a porta 8883
             await self.client.connect(MQTT_BROKER, MQTT_PORT, ssl=True)
         except Exception as e:
             print(f"Erro ao conectar ao Broker: {e}")
 
     def on_connect(self, client, flags, rc, properties):
-        print("Conectado com sucesso ao Broker MQTT!")
-        # Inscreve-se nos tópicos onde o ESP32 agora publica os dados do sensor
+        self.page.show_dialog(ft.SnackBar(ft.Text("Conectado com sucesso ao Broker MQTT!",weight='bold', color='white'), bgcolor='green',))
         self.client.subscribe("industria4/telemetria/temp")
         self.client.subscribe("industria4/telemetria/vib")
 
     def on_message(self, client, topic, payload, qos, properties):
-        """Processa as mensagens recebidas do ESP32 de forma segura."""
+        """Processa as mensagens recebidas do ESP32 de forma segura e atualiza as cores."""
         try:
             data = payload.decode("utf-8")
+            val_atual = float(data)
             
-            # Função interna para rodar a atualização de UI de forma segura no Flet
             async def update_ui(e):
                 if topic == "industria4/telemetria/temp":
-                    self.temp_text.value = f"{float(data):.1f} °C"
+                    self.temp_text.value = f"{val_atual:.1f} °C"
+                    
+                    # Captura os limites atuais digitados nos inputs
+                    lim_max = float(self.input_max_temp.value or 40.0)
+                    lim_min = float(self.input_min_temp.value or 20.0)
+                    
+                    # Altera a cor do container de temperatura baseado nos limites
+                    if val_atual > lim_max or val_atual < lim_min:
+                        self.temp_container.bgcolor = ft.Colors.RED_ACCENT_700  # Perigo / Alerta
+                    else:
+                        self.temp_container.bgcolor = ft.Colors.GREEN_700  # Normal / Seguro
+                        
                 elif topic == "industria4/telemetria/vib":
-                    self.vib_text.value = f"{float(data):.2f} g"
+                    self.vib_text.value = f"{val_atual:.2f} g"
+                    
+                    lim_vib = float(self.input_vib_limit.value or 2.5)
+                    
+                    # Altera a cor do container de vibração baseado no limite máximo
+                    if val_atual >= lim_vib:
+                        self.vib_container.bgcolor = ft.Colors.RED_ACCENT_700  # Crítico
+                    else:
+                        self.vib_container.bgcolor = ft.Colors.GREEN_700  # Seguro
+                
                 self.page.update()
 
-            # Dispara a atualização dentro do loop de eventos do Flet
             self.page.run_task(update_ui, None)
             
         except Exception as e:
-            print(f"Erro ao processar mensagem MQTT: {e}")
+            self.page.show_dialog(ft.SnackBar(ft.Text(f"Erro ao processar mensagem MQTT: {e}",weight='bold', color='white'), bgcolor='red',))
+            
         
-        return 0 # Requisito obrigatório do gmqtt para confirmar processamento de mensagens
+        return 0
 
-    # Ações de Envio de Comandos
     async def send_param(self, topic, value):
         if self.client and self.client.is_connected:
             self.client.publish(topic, str(value))
@@ -85,9 +110,10 @@ class IndustryDashboard:
     async def toggle_buzzer(self, e):
         self.buzzer_state = not self.buzzer_state
         cmd = "on" if self.buzzer_state else "off"
-        self.buzzer_btn.text = "Desligar Buzzer" if self.buzzer_state else "Ligar Buzzer"
+        self.buzzer_btn.text = "Desligar Buzzer" if self.buzzer_state else "Buzzer"
         
         self.buzzer_btn.style = ft.ButtonStyle(
+            
             bgcolor=ft.Colors.GREEN if self.buzzer_state else ft.Colors.RED_400,
             color=ft.Colors.WHITE
         )
@@ -96,8 +122,7 @@ class IndustryDashboard:
         self.page.update()
 
     def show_snackbar(self, message):
-        self.page.snack_bar = ft.SnackBar(ft.Text(message), action="OK")
-        self.page.snack_bar.open = True
+        self.page.show_dialog(ft.SnackBar(ft.Text(message, color='white', weight='bold'), open=True, bgcolor='blue')) # Ajustado para método moderno do Flet
         self.page.update()
 
     def build_ui(self):
@@ -105,18 +130,12 @@ class IndustryDashboard:
         self.page.title = "Dashboard - Indústria 4.0"
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.padding = 20
-
-        # Cards de Monitoramento
+        
+        # Cards de Monitoramento (Instanciados no construtor)
         monitor_cards = ft.Row(
             controls=[
-                ft.Container(
-                    content=ft.Column([ft.Text("Temperatura Atual"), self.temp_text], alignment=ft.MainAxisAlignment.CENTER),
-                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, padding=20, border_radius=10, expand=True
-                ),
-                ft.Container(
-                    content=ft.Column([ft.Text("Vibração Atual"), self.vib_text], alignment=ft.MainAxisAlignment.CENTER),
-                    bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, padding=20, border_radius=10, expand=True
-                ),
+                self.temp_container,
+                self.vib_container,
             ],
             spacing=20
         )
@@ -154,7 +173,8 @@ class IndustryDashboard:
 
         # Adiciona tudo na tela principal
         self.page.add(
-            ft.Text("Gerenciamento Industrial - MPU6050", size=24, weight=ft.FontWeight.BOLD),
+            ft.Container(height=20),
+            ft.Text("Gerenciamento Industrial", size=24, weight=ft.FontWeight.BOLD),
             ft.Divider(),
             monitor_cards,
             ft.Text("Painel de Comandos", size=20, weight=ft.FontWeight.W_500),
